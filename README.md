@@ -1,6 +1,6 @@
 # MsgParser
 
-A collection of three standalone Python parsers for the most common healthcare message formats — **HL7 v2.x**, **FHIR R4**, and **C-CDA**.
+A collection of four standalone Python parsers for the most common healthcare message formats — **HL7 v2.x**, **FHIR R4**, **C-CDA**, and **X12 EDI**.
 
 - Zero external dependencies (standard library only)
 - Python 3.9 or newer
@@ -17,6 +17,7 @@ A collection of three standalone Python parsers for the most common healthcare m
 - [HL7 v2.x Parser](#hl7-v2x-parser)
 - [FHIR R4 Parser](#fhir-r4-parser)
 - [C-CDA Parser](#c-cda-parser)
+- [X12 EDI Parser](#x12-edi-parser)
 - [Running the Built-in Demos](#running-the-built-in-demos)
 - [Error Handling](#error-handling)
 - [Output Format](#output-format)
@@ -30,6 +31,7 @@ A collection of three standalone Python parsers for the most common healthcare m
 | HL7 Parser | `hl7_parser.py` | HL7 v2.3 – v2.7 | Pipe-delimited text |
 | FHIR Parser | `fhir_parser.py` | FHIR R4 (4.0.1) | JSON string or dict |
 | C-CDA Parser | `ccda_parser.py` | C-CDA R2.1 / CDA R2 | XML file or string |
+| X12 Parser | `x12_parser.py` | X12 EDI 005010 | Pipe/tilde-delimited text |
 
 ---
 
@@ -59,6 +61,7 @@ No `pip install` step is needed. The parsers use only the Python standard librar
 from hl7_parser  import HL7Parser
 from fhir_parser import FHIRParser
 from ccda_parser import CCDAParser
+from x12_parser  import X12Parser
 
 # --- HL7 ---
 hl7    = HL7Parser()
@@ -379,6 +382,115 @@ if result.success:
     print(result.to_json())
 ```
 
+
+---
+
+## X12 EDI Parser
+
+### Supported Transactions
+
+| Transaction | Description |
+|---|---|
+| 837P | Professional Claims (physician/practitioner) |
+| 837I | Institutional Claims (hospital/facility) |
+| 837D | Dental Claims |
+| 835 | Healthcare Payment / Remittance Advice |
+| 277CA (MO4) | Claims Acknowledgment / Status Response |
+
+### Usage
+
+```python
+from x12_parser import X12Parser
+
+parser = X12Parser()
+
+# Auto-detect transaction type and parse
+result = parser.parse(raw_x12_string)
+
+# Or parse a specific transaction type
+result = parser.parse_837p(raw_x12_string)   # Professional claim
+result = parser.parse_837i(raw_x12_string)   # Institutional claim
+result = parser.parse_837d(raw_x12_string)   # Dental claim
+result = parser.parse_835(raw_x12_string)    # Remittance advice
+result = parser.parse_mo4(raw_x12_string)    # 277CA claim acknowledgment
+```
+
+### Result Object — `X12ParseResult`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `success` | `bool` | Whether the transaction parsed without errors |
+| `transaction_type` | `str` | Detected type (e.g. `837P`, `835`, `277CA (MO4)`) |
+| `envelope` | `dict` | ISA/GS interchange and group envelope data |
+| `summary` | `dict` | Structured clinical/financial data |
+| `raw_segments` | `list` | All raw segment strings |
+| `errors` | `list` | Fatal parse errors |
+| `warnings` | `list` | Non-fatal warnings |
+
+```python
+result.to_json()              # → str   full JSON output
+result.get_claims()           # → list  (837 claim loops)
+result.get_payments()         # → list  (835 claim payment loops)
+result.get_financial_summary()# → dict  (835 totals: charged, paid, adjustments)
+```
+
+### 837 Claim Summary Fields
+
+| Field | Description |
+|---|---|
+| `claim_id` | Patient control / claim number |
+| `total_billed_amount` | Total charge amount |
+| `diagnoses` | List of ICD-10 diagnosis codes |
+| `service_lines` | List of procedure/revenue line items |
+| `subscriber` | Subscriber / insured demographics |
+| `billing_provider` | Billing provider NPI and name |
+| `rendering_provider` | Rendering provider NPI and name |
+| `prior_auth_number` | Authorization reference number |
+
+### 835 Remittance Summary Fields
+
+| Field | Description |
+|---|---|
+| `payment` | EFT/check amount, method, date, bank routing |
+| `payer` / `payee` | Payer and payee names and IDs |
+| `claim_payments` | Per-claim payment detail (CLP loops) |
+| `financial_summary` | Totals: charged, paid, patient responsibility, adjustments |
+
+Each `claim_payment` entry includes:
+- `charged_amount`, `paid_amount`, `patient_responsibility`
+- `adjustments` — CAS segments with group code, reason code, and description
+- `service_payments` — SVC line-level payments
+
+### Example
+
+```python
+from x12_parser import X12Parser
+
+parser = X12Parser()
+
+# Parse an 837P professional claim
+result = parser.parse_837p(raw_x12_string)
+
+if result.success:
+    for claim in result.get_claims():
+        print(claim["claim_id"], claim["total_billed_amount"])
+        for dx in claim["diagnoses"]:
+            print(dx["code"])
+        for svc in claim["service_lines"]:
+            print(svc["procedure_code"], svc["charge_amount"])
+
+# Parse an 835 remittance
+result = parser.parse_835(raw_x12_string)
+
+if result.success:
+    fin = result.get_financial_summary()
+    print(f"Total paid: ${fin['total_paid']:,.2f}")
+    for cp in result.get_payments():
+        print(cp["payer_claim_number"], cp["claim_status"], cp["paid_amount"])
+        for adj in cp["adjustments"]:
+            print(adj["reason_code"], adj["reason_description"], adj["adjustment_amount"])
+```
+
 ---
 
 ## Running the Built-in Demos
@@ -393,6 +505,7 @@ python main.py
 python hl7_parser.py
 python fhir_parser.py
 python ccda_parser.py
+python x12_parser.py
 ```
 
 ---
@@ -431,6 +544,8 @@ Every result object exposes a `to_json()` method that returns a consistently str
 ```
 
 For C-CDA the top-level keys are `document_type`, `patient`, `author`, `custodian`, `document_meta`, and `sections` instead of `summary` and `raw_data`.
+
+For X12 the top-level keys are `transaction_type`, `envelope`, `summary`, `errors`, and `warnings`.
 
 ---
 
